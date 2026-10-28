@@ -47,6 +47,10 @@ struct Impl {
     int baseline;
 };
 
+#ifdef BENCH_CANDIDATE_DECLS
+BENCH_CANDIDATE_DECLS
+#endif
+
 static const struct Impl s_impls[] = {
     {"baseline", lz4_decompress_block, 1},
 #ifdef BENCH_CANDIDATES
