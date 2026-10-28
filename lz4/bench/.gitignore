@@ -1,0 +1,7 @@
+lz4host
+*.o
+*.dep
+*.elf
+*.map
+*.ps-exe
+lz4fuzz
