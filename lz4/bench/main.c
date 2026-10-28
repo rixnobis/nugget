@@ -75,6 +75,7 @@ struct Stream {
 static uint8_t s_work[GUARD + 70 * 1024 + 4 + GUARD];
 static uint8_t s_src[70 * 1024 + 4];
 static uint32_t s_stack[4096];
+static uint8_t s_save[140 * 1024];
 static int s_exit;
 
 static __attribute__((noreturn)) void exitWith(int code) {
@@ -146,17 +147,21 @@ static int gateTop(const struct Impl *im, const struct Stream *s) {
     uint8_t *outEnd = in - GUARD - 1;
     uint8_t *out = outEnd - s->rawlen;
     uint8_t *lo = out - GUARD;
-    if (lo < __bss_end + 64) return -1;
+    if (lo < __bss_end + 64 || (uint32_t)(top - lo) > sizeof(s_save)) return -1;
+    /* Whatever lives up there (the loader's stack frames at least) is saved
+       and put back with interrupts off for the whole window. */
+    enter();
+    memcpy(s_save, lo, top - lo);
     memset(lo, GUARDBYTE, top - lo);
     memcpy(in, s->comp, s->complen);
-    enter();
     im->fn(in, inEnd, out);
-    leave();
     int bad = 0;
     if (memcmp(out, s->raw, s->rawlen)) bad |= 1;
     if (!guardOk(lo, GUARD) || !guardOk(outEnd, in - outEnd)) bad |= 2;
     if (memcmp(in, s->comp, s->complen)) bad |= 4;
     if (!guardOk(inEnd, top - inEnd)) bad |= 8;
+    memcpy(lo, s_save, top - lo);
+    leave();
     return bad;
 }
 
