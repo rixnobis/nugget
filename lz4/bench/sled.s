@@ -14,19 +14,21 @@ benchSled:
     nop
 
 /* void benchOnStack(void (*fn)(void), void *sp): runs fn on another stack,
-   so the top of RAM is free for the edge-of-memory arm. */
+   so the top of RAM is free for the edge-of-memory arm. The 16 bytes at
+   0($sp) are fn's argument home area (a varargs callee stores a0-a3 there),
+   so the saved registers sit above them. */
     .section .text.benchOnStack, "ax", @progbits
     .global benchOnStack
 benchOnStack:
     move  $t0, $sp
     move  $sp, $a1
-    addiu $sp, -16
-    sw    $ra, 4($sp)
-    sw    $t0, 0($sp)
+    addiu $sp, -24
+    sw    $ra, 20($sp)
+    sw    $t0, 16($sp)
     jalr  $a0
     nop
-    lw    $ra, 4($sp)
-    lw    $sp, 0($sp)
+    lw    $ra, 20($sp)
+    lw    $sp, 16($sp)
     jr    $ra
     nop
 
