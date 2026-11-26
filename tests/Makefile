@@ -10,6 +10,7 @@ all:
 	$(MAKE) -C cdrom/playback all
 	$(MAKE) -C cdrom/race all
 	$(MAKE) -C cdrom/errors all
+	$(MAKE) -C cdrom/edc-probe all
 	$(MAKE) -C cpu/cpu all
 	$(MAKE) -C cpu/cop-branch all
 	$(MAKE) -C cpu/cop0 all
@@ -160,6 +161,7 @@ clean:
 	$(MAKE) -C cdrom/playback clean
 	$(MAKE) -C cdrom/race clean
 	$(MAKE) -C cdrom/errors clean
+	$(MAKE) -C cdrom/edc-probe clean
 	$(MAKE) -C cpu/cpu clean
 	$(MAKE) -C cpu/cop-branch clean
 	$(MAKE) -C cpu/cop0 clean

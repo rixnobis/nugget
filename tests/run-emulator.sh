@@ -109,6 +109,7 @@ SKIPS=(
     "cdrom/playback/cdrom-playback|needs the disc from cdrom/common/create-test-iso.lua and the CD-ROM code from pcsx-redux#1129"
     "cdrom/race/cdrom-race|needs the disc from cdrom/common/create-test-iso.lua and the CD-ROM code from pcsx-redux#1129"
     "cdrom/errors/cdrom-errors|needs the disc from cdrom/common/create-test-iso.lua and the CD-ROM code from pcsx-redux#1129"
+    "cdrom/edc-probe/edc-probe|hardware probe: needs the disc from cdrom/common/create-test-iso.lua, prints what the drive does with bad EDC/ECC sectors, no verdict"
     "dma/modes/dma-modes|hardware probe: prints DMA register states per sync mode, loops forever, no verdict"
     "dma/priority/dma-priority|hardware probe: prints DMA arbitration timings, loops forever, no verdict"
     "spu/wide-writes/spu-wide-writes|hardware probe: prints SPU write miss counts, loops forever, no verdict"

@@ -80,12 +80,164 @@ while not bootFile:eof() do
     count = count + 1
 end
 
+-- EDC/ECC test arms, LBA 100000 to 100103, inside the counter filler. No
+-- other test reads this range. Each arm is 8 sectors, 16 apart: the 7 at
+-- arm+0, +1 and +3 to +7 are good Mode 2 Form 1 sectors, the one at arm+2 is
+-- the BAD sector, and arm+8 to +15 stay counter fillers. A ReadN from the arm
+-- start shows whether the drive reads on past the BAD sector, skips it,
+-- stalls or retries. Every arm sector carries the pattern of edcPattern
+-- below: its LBA little-endian in the first 4 bytes, then a function of LBA
+-- and offset, so a reader can tell which sector it was handed. "Stale" means
+-- the EDC/ECC computed for the original payload, before the damage. Mode 2
+-- ECC is computed with a zeroed header, so neither EDC nor ECC covers the
+-- header MSF.
+--
+--   arm  LBAs           BAD sector (arm+2)
+--   A    100000-100007  Form 1, data byte 0x400 xored with 0xff, EDC+ECC stale
+--                       (one symbol error, P/Q can correct it)
+--   B    100016-100023  Form 1, alternate pattern (offsets 4+ xored with 0xa5),
+--                       EDC+ECC recomputed: valid but different, a control
+--   C    100032-100039  Form 1, EDC xored with 0xffffffff, ECC recomputed over
+--                       the broken EDC: ECC consistent, EDC fails
+--   D    100048-100055  Form 1, 256 data bytes at 4, 12, ... 2044 xored with
+--                       0xff, EDC+ECC stale (beyond P/Q reach)
+--   E    100064-100071  Form 2 data (submode 0x28), EDC xored with 0xffffffff
+--   F    100080-100087  Form 2 data (submode 0x28), EDC 0: a control
+--   G    100096-100103  Form 1, header MSF of LBA+4500 (one minute on), EDC and
+--                       ECC computed (they do not cover the header)
+local armStart = 100000
+local armStride = 16
+local armNames = { 'A', 'B', 'C', 'D', 'E', 'F', 'G' }
+
+local function edcPattern(lba, k, alt)
+    if k < 4 then return bit.band(bit.rshift(lba, 8 * k), 0xff) end
+    local v = bit.band(k * 0x9d + lba * 0x3b + bit.rshift(k, 8) * 0x11, 0xff)
+    if alt then v = bit.bxor(v, 0xa5) end
+    return v
+end
+
+local eccF, eccB, edcLut = {}, {}, {}
+for i = 0, 255 do
+    local j = bit.band(bit.bxor(bit.lshift(i, 1), bit.band(i, 0x80) ~= 0 and 0x11d or 0), 0xff)
+    eccF[i] = j
+    eccB[bit.bxor(i, j)] = i
+    local e = i
+    for _ = 1, 8 do
+        e = bit.bxor(bit.rshift(e, 1), bit.band(e, 1) ~= 0 and 0xd8018001 or 0)
+    end
+    edcLut[i] = e
+end
+
+local raw = Support.NewLuaBuffer(2352)
+
+local function edcOf(from, len)
+    local e = 0
+    for n = from, from + len - 1 do
+        e = bit.bxor(bit.rshift(e, 8), edcLut[bit.band(bit.bxor(e, raw[n]), 0xff)])
+    end
+    return e
+end
+
+local function putU32(at, v)
+    for n = 0, 3 do raw[at + n] = bit.band(bit.rshift(v, 8 * n), 0xff) end
+end
+
+-- ECMA-130 P and Q over raw[12..], header zeroed as Mode 2 wants.
+local function eccBlock(majorCount, minorCount, majorMult, minorInc, dest)
+    local size = majorCount * minorCount
+    for major = 0, majorCount - 1 do
+        local index = bit.rshift(major, 1) * majorMult + bit.band(major, 1)
+        local a, b2 = 0, 0
+        for _ = 1, minorCount do
+            local t = raw[12 + index]
+            index = index + minorInc
+            if index >= size then index = index - size end
+            a = eccF[bit.bxor(a, t)]
+            b2 = bit.bxor(b2, t)
+        end
+        a = eccB[bit.bxor(eccF[a], b2)]
+        raw[dest + major] = a
+        raw[dest + major + majorCount] = bit.bxor(a, b2)
+    end
+end
+
+local function computeECC()
+    local h = { raw[12], raw[13], raw[14], raw[15] }
+    for n = 12, 15 do raw[n] = 0 end
+    eccBlock(86, 24, 2, 86, 2076)
+    eccBlock(52, 43, 86, 88, 2248)
+    for n = 0, 3 do raw[12 + n] = h[n + 1] end
+end
+
+local function toBCD(v) return math.floor(v / 10) * 16 + v % 10 end
+
+-- A whole 2352-byte frame for `lba` with the arm pattern; EDC (and ECC for
+-- Form 1) computed. `headerLBA` overrides the address in the header.
+local function buildFrame(lba, form2, alt, headerLBA)
+    ffi.fill(raw.data, 2352)
+    raw[0] = 0
+    for n = 1, 10 do raw[n] = 0xff end
+    local msf = (headerLBA or lba) + 150
+    raw[12] = toBCD(math.floor(msf / 4500))
+    raw[13] = toBCD(math.floor(msf / 75) % 60)
+    raw[14] = toBCD(msf % 75)
+    raw[15] = 2
+    local sm = form2 and 0x28 or 0x08
+    raw[18], raw[22] = sm, sm
+    local len = form2 and 2324 or 2048
+    for k = 0, len - 1 do raw[24 + k] = edcPattern(lba, k, alt) end
+    putU32(24 + len, edcOf(16, 8 + len))
+    if not form2 then computeECC() end
+end
+
+local function writeArmSector(i)
+    local arm = math.floor((i - armStart) / armStride) + 1
+    local pos = (i - armStart) % armStride
+    local name = armNames[arm]
+    if pos ~= 2 then
+        for k = 0, 2047 do raw[k] = edcPattern(i, k) end
+        iso:writeSector(raw:cast 'uint8_t *', 2048)
+        return
+    end
+    if name == 'A' then
+        buildFrame(i)
+        raw[24 + 0x400] = bit.bxor(raw[24 + 0x400], 0xff)
+    elseif name == 'B' then
+        buildFrame(i, false, true)
+    elseif name == 'C' then
+        buildFrame(i)
+        for n = 2072, 2075 do raw[n] = bit.bxor(raw[n], 0xff) end
+        computeECC()
+    elseif name == 'D' then
+        buildFrame(i)
+        for n = 0, 255 do raw[24 + 4 + 8 * n] = bit.bxor(raw[24 + 4 + 8 * n], 0xff) end
+    elseif name == 'E' then
+        buildFrame(i, true)
+        for n = 2348, 2351 do raw[n] = bit.bxor(raw[n], 0xff) end
+    elseif name == 'F' then
+        buildFrame(i, true)
+        for n = 2348, 2351 do raw[n] = 0 end
+    elseif name == 'G' then
+        buildFrame(i, false, false, i + 4500)
+    end
+    iso:writeSector(raw:cast 'uint8_t *', 2352, 'RAW')
+end
+
+local function isArmSector(i)
+    if i < armStart or i >= armStart + armStride * #armNames then return false end
+    return (i - armStart) % armStride < 8
+end
+
 ffi.fill(b.data, 2048)
 for i = count, 30 * 60 * 75 - 1 do
-    b[0] = bit.band(i, 0xff)
-    b[1] = bit.band(bit.rshift(i, 8), 0xff)
-    b[2] = bit.band(bit.rshift(i, 16), 0xff)
-    iso:writeSector(b:cast 'uint8_t *', 2048)
+    if isArmSector(i) then
+        writeArmSector(i)
+    else
+        b[0] = bit.band(i, 0xff)
+        b[1] = bit.band(bit.rshift(i, 8), 0xff)
+        b[2] = bit.band(bit.rshift(i, 16), 0xff)
+        iso:writeSector(b:cast 'uint8_t *', 2048)
+    end
 end
 
 local function generateToneSample(frequency, sampleRate, t)
