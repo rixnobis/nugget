@@ -68,6 +68,16 @@ SOFTWARE.
 #define READ_EVENTS 10
 #define MAX_EVENTS 40
 #define WAIT_US 3000000u
+// Long-wait variant: -DREAD_WAIT_US=<us> -DARM_MASK=<bits, bit0=A> -DMODE_COUNT=<1..3>.
+#ifndef READ_WAIT_US
+#define READ_WAIT_US WAIT_US
+#endif
+#ifndef ARM_MASK
+#define ARM_MASK 0x7fu
+#endif
+#ifndef MODE_COUNT
+#define MODE_COUNT 3
+#endif
 #define US_PER_HBLANK 64u
 
 static uint32_t s_lastHSync, s_time;
@@ -265,7 +275,7 @@ static void runArm(unsigned arm, uint8_t mode) {
     initializeTime();
     CDROM_REG1 = CDL_READN;
     for (unsigned n = 0; n < READ_EVENTS; n++) {
-        uint8_t c = waitEvent('R', size);
+        uint8_t c = waitEventFor('R', size, READ_WAIT_US);
         if (c == 0) break;
         if (c == 5) {
             // GetlocL and Nop answers, with any sector that arrives first.
@@ -305,7 +315,7 @@ int main(void) {
     uint32_t oldIMASK = IMASK;
     IMASK = IRQ_CDROM;
 
-    ramsyscall_printf("EDC-PROBE START base=%u stride=%u arms=%u modes=80,00,a0\n", ARM_START, ARM_STRIDE, ARM_COUNT);
+    ramsyscall_printf("EDC-PROBE START base=%u stride=%u arms=%u mask=%02x modes=%u readwait=%u\n", ARM_START, ARM_STRIDE, ARM_COUNT, ARM_MASK, MODE_COUNT, READ_WAIT_US);
     CDROM_REG0 = 1;
     CDROM_REG3 = 0x1f;
     CDROM_REG0 = 1;
@@ -316,8 +326,9 @@ int main(void) {
     printEvents('-', 0);
 
     static const uint8_t modes[3] = {0x80, 0x00, 0xa0};
-    for (unsigned m = 0; m < 3; m++) {
-        for (unsigned arm = 0; arm < ARM_COUNT; arm++) runArm(arm, modes[m]);
+    for (unsigned m = 0; m < MODE_COUNT; m++) {
+        for (unsigned arm = 0; arm < ARM_COUNT; arm++)
+            if (ARM_MASK & (1u << arm)) runArm(arm, modes[m]);
     }
     ramsyscall_printf("EDC-PROBE DONE\n");
 
